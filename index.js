@@ -122,6 +122,7 @@ async function run() {
 
     // Database Collections
     const usersCollection = db.collection("users");
+    const staffCollection = db.collection("staff");
     const issuesCollection = db.collection("issues");
     const paymentsCollection = db.collection("payments"); // New collection for payments
 
@@ -455,7 +456,10 @@ async function run() {
     app.get("/users/:email/role", async (req, res) => {
       const email = req.params.email;
       const user = await usersCollection.findOne({ email });
-     res.send({role: user.role || "user"});
+      if (!user) {
+        return res.status(404).send({ message: "User not found" });
+      }
+      res.send({ role: user.role || "user" });
     });
 
     // -------------------------------
@@ -463,57 +467,54 @@ async function run() {
     // -------------------------------
 
     // Create an issue (Citizen only)
-    app.post(
-      "/issues/report",
-      async (req, res) => {
-        if (req.is_blocked) {
-          return res.status(403).send({
-            message: "Your account is blocked and cannot report issues.",
-          });
-        }
-
-        const issue = req.body;
-        const user = await usersCollection.findOne({ email: req.user_email });
-
-        // ❌ Free user issue limit check
-        // if (!req.is_premium && user.reportCount >= 3) {
-        //   return res.status(400).send({
-        //     message:
-        //       "Free user limit reached (3 issues). Please subscribe for unlimited reports.",
-        //   });
-        // }
-
-        issue.trackingId = generateTrackingId();
-        issue.createdAt = new Date();
-        issue.status = "pending";
-        issue.upvotes = 0;
-        issue.upvoters = []; // Array of emails who upvoted
-        issue.assignedStaff = null;
-
-        // 👇 default values
-        issue.priority = "normal";
-        issue.boosted = false;
-        issue.timeline = [
-          {
-            status: "Pending",
-            message: "Issue reported by citizen.",
-            updatedBy: "Citizen",
-            reporterEmail: issue.reporterEmail,
-            date: new Date(),
-          },
-        ];
-
-        const result = await issuesCollection.insertOne(issue);
-
-        // ➕ Increment report count for citizen
-        await usersCollection.updateOne(
-          { email: req.user_email },
-          { $inc: { reportCount: 1 } }
-        );
-
-        res.send(result);
+    app.post("/issues/report", async (req, res) => {
+      if (req.is_blocked) {
+        return res.status(403).send({
+          message: "Your account is blocked and cannot report issues.",
+        });
       }
-    );
+
+      const issue = req.body;
+      const user = await usersCollection.findOne({ email: req.user_email });
+
+      // ❌ Free user issue limit check
+      // if (!req.is_premium && user.reportCount >= 3) {
+      //   return res.status(400).send({
+      //     message:
+      //       "Free user limit reached (3 issues). Please subscribe for unlimited reports.",
+      //   });
+      // }
+
+      issue.trackingId = generateTrackingId();
+      issue.createdAt = new Date();
+      issue.status = "pending";
+      issue.upvotes = 0;
+      issue.upvoters = []; // Array of emails who upvoted
+      issue.assignedStaff = null;
+
+      // 👇 default values
+      issue.priority = "normal";
+      issue.boosted = false;
+      issue.timeline = [
+        {
+          status: "Pending",
+          message: "Issue reported by citizen.",
+          updatedBy: "Citizen",
+          reporterEmail: issue.reporterEmail,
+          date: new Date(),
+        },
+      ];
+
+      const result = await issuesCollection.insertOne(issue);
+
+      // ➕ Increment report count for citizen
+      await usersCollection.updateOne(
+        { email: req.user_email },
+        { $inc: { reportCount: 1 } }
+      );
+
+      res.send(result);
+    });
 
     // GET my issues (Citizen Dashboard)
     app.get("/issues/my", verifyFBToken, verifyCitizen, async (req, res) => {
@@ -721,61 +722,83 @@ async function run() {
     );
 
     // GET all staff members (for Manage Staff)
-    app.get(
-      "/admin/users/staff",
-      verifyFBToken,
-      verifyAdmin,
-      async (req, res) => {
+    app.get("/staffs", verifyFBToken, verifyAdmin, async (req, res) => {
+      try {
+        const { upazila } = req.query; // get upazila from query
         const query = { role: "staff" };
-        const cursor = usersCollection.find(query).sort({ createdAt: -1 });
-        const result = await cursor.toArray();
+
+        if (upazila) {
+          query.upazila = upazila; // only staff in the same upazila
+        }
+
+        const result = await staffCollection
+          .find(query)
+          .sort({ createdAt: -1 })
+          .toArray();
+
         res.send(result);
+      } catch (error) {
+        console.error("Error fetching staff:", error);
+        res.status(500).send({ message: "Failed to fetch staff" });
       }
-    );
+    });
 
     // Add a new staff member
-    app.post(
-      "/admin/users/staff",
-      verifyFBToken,
-      verifyAdmin,
-      async (req, res) => {
-        const staff = req.body;
-        staff.role = "staff";
-        staff.isBlocked = false;
-        staff.createdAt = new Date();
+    app.post("/staff", verifyFBToken, async (req, res) => {
+      const staff = req.body;
+      const { email, password, name, photo, district, upazila } = staff;
 
-        const userExist = await usersCollection.findOne({ email: staff.email });
-        if (userExist)
-          return res.status(400).send({ message: "User already exists" });
+      // 1. Check if user already exists in master user collection
+      const userExist = await usersCollection.findOne({ email: email });
+      if (userExist)
+        return res.status(400).send({ message: "User already exists" });
 
-        try {
-          // 1. Create user in Firebase Auth
-          const userRecord = await admin.auth().createUser({
-            email: staff.email,
-            password: staff.password, // IMPORTANT: See warning in project description
-            displayName: staff.name,
-            photoURL: staff.photo,
-          });
+      try {
+        // 2. Create user in Firebase Auth
+        const userRecord = await admin.auth().createUser({
+          email: email,
+          password: password,
+          displayName: name,
+          photoURL: photo,
+        });
 
-          // 2. Save user in MongoDB
-          delete staff.password; // Don't save password in MongoDB
-          staff.uid = userRecord.uid;
-          const result = await usersCollection.insertOne(staff);
+        // 3. Prepare common data
+        const newUser = {
+          uid: userRecord.uid,
+          name,
+          email,
+          photo,
+          role: "staff",
+          status: "available",
+          createdAt: new Date(),
+        };
 
-          res.send(result);
-        } catch (error) {
-          console.error("Error creating staff account:", error);
-          res.status(500).send({
-            message: "Failed to create staff account",
-            error: error.message,
-          });
-        }
+        // 4. Insert into "users" collection (Master list)
+        await usersCollection.insertOne(newUser);
+
+        // 5. Insert into "staff" collection (Staff specific list)
+        // You can add staff-only fields here like 'salary' or 'designation'
+        const staffSpecificData = {
+          ...newUser,
+          department: "General",
+          status: "available",
+          district, // Add this
+          upazila, // Add this
+        };
+        const result = await staffCollection.insertOne(staffSpecificData);
+
+        res.send(result);
+      } catch (error) {
+        console.error("Error creating staff account:", error);
+        res
+          .status(500)
+          .send({ message: "Failed to create account", error: error.message });
       }
-    );
+    });
 
     // Delete a staff member
     app.delete(
-      "/admin/users/staff/:email",
+      "/staff/:email",
       verifyFBToken,
       verifyAdmin,
       async (req, res) => {
