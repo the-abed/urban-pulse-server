@@ -841,7 +841,7 @@ async function run() {
 
     // Assign Staff to an Issue (Admin only)
     app.patch(
-      "/admin/issues/:id/assign",
+      "/issues/:id/assign",
       verifyFBToken,
       verifyAdmin,
       async (req, res) => {
@@ -863,19 +863,22 @@ async function run() {
         };
 
         const timelineRecord = {
-          status: issue.status,
+          status: "assigned",
           message: `Issue assigned to Staff: ${staffName}`,
           updatedBy: "Admin",
           date: new Date(),
         };
 
-        const result = await issuesCollection.updateOne(
-          { _id: new ObjectId(issueId) },
-          {
-            $set: { assignedStaff: staffRecord },
-            $push: { timeline: timelineRecord },
-          }
-        );
+      const result = await issuesCollection.updateOne(
+  { _id: new ObjectId(issueId) },
+  {
+    $set: {
+      assignedStaff: staffRecord,
+      status: "assigned",
+    },
+    $push: { timeline: timelineRecord },
+  }
+);
 
         res.send(result);
       }
@@ -918,6 +921,33 @@ async function run() {
         res.send(result);
       }
     );
+
+    // Get all assigned issues
+    app.get(
+  "/staff/issues",
+  verifyFBToken,
+  async (req, res) => {
+    try {
+      const staffEmail = req.user.email;
+
+      if (!staffEmail) {
+        return res.status(401).send({ message: "Unauthorized" });
+      }
+
+      const issues = await issuesCollection
+        .find({
+          "assignedStaff.email": staffEmail,
+        })
+        .sort({ "assignedStaff.assignedAt": -1 })
+        .toArray();
+
+      res.send(issues);
+    } catch (error) {
+      res.status(500).send({ message: "Failed to fetch assigned issues" });
+    }
+  }
+);
+
 
     // 💰 Payments API (Admin View)
     app.get("/admin/payments", verifyFBToken, verifyAdmin, async (req, res) => {
