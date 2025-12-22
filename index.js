@@ -810,7 +810,7 @@ app.get("/staffs", async (req, res) => {
     // Add a new staff member
     app.post("/staff", verifyFBToken, async (req, res) => {
       const staff = req.body;
-      const { email, password, name, photo, district, upazila } = staff;
+      const { email, password, name, photo, district, staffUpazila } = staff;
 
       // 1. Check if user already exists in master user collection
       const userExist = await usersCollection.findOne({ email: email });
@@ -847,7 +847,7 @@ app.get("/staffs", async (req, res) => {
           department: "General",
           status: "available",
           district, // Add this
-          upazila, // Add this
+          staffUpazila, // Add this
         };
         const result = await staffCollection.insertOne(staffSpecificData);
 
