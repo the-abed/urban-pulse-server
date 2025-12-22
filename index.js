@@ -124,7 +124,20 @@ async function run() {
     const usersCollection = db.collection("users");
     const staffCollection = db.collection("staff");
     const issuesCollection = db.collection("issues");
+    const trackingCollection = db.collection("trackings");
     const paymentsCollection = db.collection("payments"); // New collection for payments
+
+    const logTracking = async ({ issueId, status, updatedBy }) => {
+      const log = {
+        issueId,
+        status,
+        details: status.replace("_", " "),
+        updatedBy,
+        createdAt: new Date(),
+      };
+
+      return await trackingCollection.insertOne(log);
+    };
 
     // -------------------------------
     // 🔑 ADMIN UTILITY API
@@ -256,6 +269,9 @@ async function run() {
     // Get issue by id (Private Route)
     app.get("/issues/:id", verifyFBToken, async (req, res) => {
       const id = req.params.id;
+      if (!ObjectId.isValid(id)) {
+        return res.status(400).send({ message: "Invalid Issue ID" });
+      }
       try {
         const result = await issuesCollection.findOne({
           _id: new ObjectId(id),
@@ -268,25 +284,12 @@ async function run() {
       }
     });
 
-    // Report an issue
-    // app.post("/issue", verifyFBToken, async (req, res) => {
-    //   const issue = req.body;
-    //   issue.reporterEmail = req.user_email;
-    //   issue.createdAt = new Date();
-    //   const trackingId = generateTrackingId();
-    //   issue.trackingId = trackingId;
-    //   issue.upvotes = 0;
-    //   issue.upvoters = []; // <--- Initialize this as an empty array
-    //   issue.comments = [];
-    //   issue.boosted = false;
-
-    //   const result = await issuesCollection.insertOne(issue);
-    //   res.send(result);
-    // });
-
-    // Upvote an issue
+    
     app.patch("/issue/:id/upvote", verifyFBToken, async (req, res) => {
       const issueId = req.params.id;
+      if (!ObjectId.isValid(issueId)) {
+        return res.status(400).send({ message: "Invalid issue ID" });
+      }
       const userEmail = req.user_email;
 
       try {
@@ -531,6 +534,9 @@ async function run() {
       verifyCitizen,
       async (req, res) => {
         const issueId = req.params.id;
+        if (!ObjectId.isValid(issueId)) {
+          return res.status(400).send({ message: "Invalid issue ID" });
+        }
         const updatedData = req.body;
         const userEmail = req.user_email;
 
@@ -565,6 +571,9 @@ async function run() {
     // Delete an issue (Citizen only)
     app.delete("/issues/my/:id", verifyFBToken, async (req, res) => {
       const issueId = req.params.id;
+      if (!ObjectId.isValid(issueId)) {
+        return res.status(400).send({ message: "Invalid issue ID" });
+      }
       const userEmail = req.user_email;
 
       const issue = await issuesCollection.findOne({
@@ -584,7 +593,7 @@ async function run() {
       res.send(result);
     });
 
-    // // Boost an issue (Citizen only)
+
     // app.patch(
     //   "/issues/:id/boost",
     //   verifyFBToken,
@@ -655,52 +664,113 @@ async function run() {
       res.send(result);
     });
 
+    // -------------------------------
+    // 🛠️ STAFF DASHBOARD APIs
+    // -------------------------------
+
     // Update issue status (Staff only)
     app.patch(
       "/staff/issues/:id/status",
       verifyFBToken,
       verifyStaff,
       async (req, res) => {
-        const issueId = req.params.id;
-        const { newStatus, note } = req.body;
-        const staffEmail = req.user_email;
-
-        const issue = await issuesCollection.findOne({
-          _id: new ObjectId(issueId),
-        });
-
-        if (!issue) return res.status(404).send({ message: "Issue not found" });
-
-        // 🔒 Must be the assigned staff or Admin
-        if (
-          issue.assignedStaff?.email !== staffEmail &&
-          req.user_role !== "admin"
-        ) {
-          return res
-            .status(403)
-            .send({ message: "Forbidden: Not assigned to this issue" });
-        }
-
-        // 🔒 Status transition validation (Optional but good practice)
-        // Example: Cannot go directly from Pending to Closed
-        // You can add more detailed logic here based on your exact status flow.
-
-        const statusRecord = {
-          status: newStatus,
-          message: note || `Status updated to ${newStatus}.`,
-          updatedBy: req.user_role === "admin" ? "Admin" : "Staff",
-          date: new Date(),
-        };
-
-        const result = await issuesCollection.updateOne(
-          { _id: new ObjectId(issueId) },
-          {
-            $set: { status: newStatus },
-            $push: { timeline: statusRecord },
+        try {
+          const issueId = req.params.id;
+          if (!ObjectId.isValid(issueId)) {
+            return res.status(400).send({ message: "Invalid issue ID" });
           }
-        );
+          const { newStatus, note } = req.body;
+          const staffEmail = req.user_email;
 
-        res.send(result);
+          if (!newStatus) {
+            return res.status(400).send({ message: "newStatus is required" });
+          }
+
+          const issue = await issuesCollection.findOne({
+            _id: new ObjectId(issueId),
+          });
+
+          if (!issue) {
+            return res.status(404).send({ message: "Issue not found" });
+          }
+
+          // 🔒 Authorization
+          if (
+            issue.assignedStaff?.email !== staffEmail &&
+            req.user_role !== "admin"
+          ) {
+            return res
+              .status(403)
+              .send({ message: "Forbidden: Not assigned to this issue" });
+          }
+
+          /* -----------------------------
+         Status transition validation
+      ----------------------------- */
+          const STATUS_FLOW = {
+            assigned: ["accept"],
+            accept: ["in_progress"],
+            in_progress: ["resolved"],
+            resolved: ["closed"],
+            closed: [],
+          };
+
+          const allowedNext = STATUS_FLOW[issue.status] || [];
+          if (!allowedNext.includes(newStatus)) {
+            return res.status(400).send({
+              message: `Cannot change status from ${issue.status} to ${newStatus}`,
+            });
+          }
+
+          /* -----------------------------
+         Update issue timeline
+      ----------------------------- */
+          const timelineRecord = {
+            status: newStatus,
+            message: note || `Status updated to ${newStatus.replace("_", " ")}`,
+            updatedBy: req.user_role === "admin" ? "Admin" : "Staff",
+            date: new Date(),
+          };
+
+          await issuesCollection.updateOne(
+            { _id: new ObjectId(issueId) },
+            {
+              $set: { status: newStatus },
+              $push: { timeline: timelineRecord },
+            }
+          );
+
+          /* -----------------------------
+         🔄 Update staff status
+      ----------------------------- */
+          if (newStatus === "accept") {
+            await staffCollection.updateOne(
+              { email: staffEmail },
+              { $set: { status: "in_work" } }
+            );
+          }
+
+          if (newStatus === "closed") {
+            await staffCollection.updateOne(
+              { email: staffEmail },
+              { $set: { status: "available" } }
+            );
+          }
+
+          // 🔥 Track status change
+          await logTracking({
+            issueId: new ObjectId(issueId),
+            status: newStatus,
+            updatedBy: req.user_role === "admin" ? "Admin" : "Staff",
+          });
+
+          res.send({
+            message: "Issue status & staff status updated successfully",
+          });
+        } catch (error) {
+          console.error("Status update error:", error);
+          res.status(500).send({ message: "Failed to update status" });
+        }
       }
     );
 
@@ -722,26 +792,20 @@ async function run() {
     );
 
     // GET all staff members (for Manage Staff)
-    app.get("/staffs", verifyFBToken, verifyAdmin, async (req, res) => {
-      try {
-        const { upazila } = req.query; // get upazila from query
-        const query = { role: "staff" };
+app.get("/staffs", async (req, res) => {
+  try {
+    const staffs = await staffCollection.find().toArray();
 
-        if (upazila) {
-          query.upazila = upazila; // only staff in the same upazila
-        }
+    console.log("Staff count in DB:", staffs.length);
+    res.send(staffs);
+  } catch (error) {
+    console.error("Error fetching staff:", error);
+    res.status(500).send({ message: "Failed to fetch staff" });
+  }
+});
 
-        const result = await staffCollection
-          .find(query)
-          .sort({ createdAt: -1 })
-          .toArray();
 
-        res.send(result);
-      } catch (error) {
-        console.error("Error fetching staff:", error);
-        res.status(500).send({ message: "Failed to fetch staff" });
-      }
-    });
+
 
     // Add a new staff member
     app.post("/staff", verifyFBToken, async (req, res) => {
@@ -797,47 +861,56 @@ async function run() {
     });
 
     // Delete a staff member
-    app.delete(
-      "/staff/:email",
-      verifyFBToken,
-      verifyAdmin,
-      async (req, res) => {
-        const staffEmail = req.params.email;
+   // DELETE /api/staff/:email
+// DELETE /api/staff/:email
+app.delete("/api/staff/:email", verifyFBToken, verifyAdmin, async (req, res) => {
+  const staffEmail = req.params.email;
 
-        try {
-          // 1. Find user in DB to get UID
-          const staffUser = await usersCollection.findOne({
-            email: staffEmail,
-            role: "staff",
-          });
-          if (!staffUser)
-            return res.status(404).send({ message: "Staff user not found" });
+  try {
+    // 1️⃣ Find staff in usersCollection to get UID
+    const staffUser = await usersCollection.findOne({
+      email: staffEmail,
+      role: "staff",
+    });
 
-          // 2. Delete user from Firebase Auth
-          await admin.auth().deleteUser(staffUser.uid);
+    if (!staffUser) {
+      return res.status(404).json({ message: "Staff user not found in users collection" });
+    }
 
-          // 3. Delete user from MongoDB
-          const result = await usersCollection.deleteOne({
-            email: staffEmail,
-            role: "staff",
-          });
+    const uid = staffUser.uid;
 
-          // 4. Unassign staff from any issues (Cleanup)
-          await issuesCollection.updateMany(
-            { "assignedStaff.email": staffEmail },
-            { $set: { assignedStaff: null, status: "pending" } } // Reset status to pending
-          );
+    // 2️⃣ Delete user from Firebase Auth
+    await admin.auth().deleteUser(uid);
 
-          res.send(result);
-        } catch (error) {
-          console.error("Error deleting staff account:", error);
-          res.status(500).send({
-            message: "Failed to delete staff account",
-            error: error.message,
-          });
-        }
-      }
+    // 3️⃣ Delete staff from usersCollection
+    const deleteUserResult = await usersCollection.deleteOne({
+      email: staffEmail,
+      role: "staff",
+    });
+
+    // 4️⃣ Delete staff from staffCollection
+    const deleteStaffResult = await staffCollection.deleteOne({ email: staffEmail });
+
+    // 5️⃣ Unassign staff from any issues
+    await issuesCollection.updateMany(
+      { "assignedStaff.email": staffEmail },
+      { $set: { assignedStaff: null, status: "pending" } } // Reset status to pending
     );
+
+    res.status(200).json({
+      message: "Staff deleted successfully",
+      deletedFromUsers: deleteUserResult.deletedCount,
+      deletedFromStaff: deleteStaffResult.deletedCount,
+    });
+  } catch (error) {
+    console.error("Error deleting staff:", error);
+    res.status(500).json({
+      message: "Failed to delete staff",
+      error: error.message,
+    });
+  }
+});
+
 
     // Assign Staff to an Issue (Admin only)
     app.patch(
@@ -846,6 +919,9 @@ async function run() {
       verifyAdmin,
       async (req, res) => {
         const issueId = req.params.id;
+        if (!ObjectId.isValid(issueId)) {
+          return res.status(400).send({ message: "Invalid issue ID" });
+        }
         const { staffEmail, staffName } = req.body; // Staff details to assign
 
         const issue = await issuesCollection.findOne({
@@ -869,16 +945,21 @@ async function run() {
           date: new Date(),
         };
 
-      const result = await issuesCollection.updateOne(
-  { _id: new ObjectId(issueId) },
-  {
-    $set: {
-      assignedStaff: staffRecord,
-      status: "assigned",
-    },
-    $push: { timeline: timelineRecord },
-  }
-);
+        const result = await issuesCollection.updateOne(
+          { _id: new ObjectId(issueId) },
+          {
+            $set: {
+              assignedStaff: staffRecord,
+              status: "assigned",
+            },
+            $push: { timeline: timelineRecord },
+          }
+        );
+        await logTracking({
+          issueId: new ObjectId(issueId),
+          status: "assigned",
+          updatedBy: "Admin",
+        });
 
         res.send(result);
       }
@@ -923,31 +1004,26 @@ async function run() {
     );
 
     // Get all assigned issues
-    app.get(
-  "/staff/issues",
-  verifyFBToken,
-  async (req, res) => {
-    try {
-      const staffEmail = req.user.email;
+    app.get("/staff/issues", verifyFBToken, async (req, res) => {
+      try {
+        const staffEmail = req.user.email;
 
-      if (!staffEmail) {
-        return res.status(401).send({ message: "Unauthorized" });
+        if (!staffEmail) {
+          return res.status(401).send({ message: "Unauthorized" });
+        }
+
+        const issues = await issuesCollection
+          .find({
+            "assignedStaff.email": staffEmail,
+          })
+          .sort({ "assignedStaff.assignedAt": -1 })
+          .toArray();
+
+        res.send(issues);
+      } catch (error) {
+        res.status(500).send({ message: "Failed to fetch assigned issues" });
       }
-
-      const issues = await issuesCollection
-        .find({
-          "assignedStaff.email": staffEmail,
-        })
-        .sort({ "assignedStaff.assignedAt": -1 })
-        .toArray();
-
-      res.send(issues);
-    } catch (error) {
-      res.status(500).send({ message: "Failed to fetch assigned issues" });
-    }
-  }
-);
-
+    });
 
     // 💰 Payments API (Admin View)
     app.get("/admin/payments", verifyFBToken, verifyAdmin, async (req, res) => {
@@ -963,6 +1039,176 @@ async function run() {
       res.send(payments);
     });
 
+// payment invoice pdf data by id
+
+
+    // Single optimized admin dashboard API
+    app.get(
+  "/admin/dashboard-summary",
+  verifyFBToken,
+  verifyAdmin,
+  async (req, res) => {
+    try {
+      /* ===============================
+         1️⃣ Issues by Status
+      =============================== */
+      const issueStatusPipeline = [
+        {
+          $group: {
+            _id: "$status",
+            count: { $sum: 1 },
+          },
+        },
+        {
+          $project: {
+            _id: 0,
+            status: "$_id",
+            count: 1,
+          },
+        },
+      ];
+
+      /* ===============================
+         2️⃣ Issues Per Day
+      =============================== */
+      const issuesPerDayPipeline = [
+        {
+          $addFields: {
+            day: {
+              $dateToString: {
+                format: "%Y-%m-%d",
+                date: "$createdAt",
+              },
+            },
+          },
+        },
+        {
+          $group: {
+            _id: "$day",
+            totalIssues: { $sum: 1 },
+          },
+        },
+        { $sort: { _id: 1 } },
+      ];
+
+      /* ===============================
+         3️⃣ Assigned vs Unassigned
+      =============================== */
+      const assignmentPipeline = [
+        {
+          $project: {
+            assignmentStatus: {
+              $cond: [
+                { $ifNull: ["$assignedStaff", false] },
+                "assigned",
+                "unassigned",
+              ],
+            },
+          },
+        },
+        {
+          $group: {
+            _id: "$assignmentStatus",
+            count: { $sum: 1 },
+          },
+        },
+        {
+          $project: {
+            _id: 0,
+            status: "$_id",
+            count: 1,
+          },
+        },
+      ];
+
+      /* ===============================
+         4️⃣ Payment Summary
+      =============================== */
+      const paymentSummaryPipeline = [
+        { $match: { paymentStatus: "paid" } },
+        {
+          $group: {
+            _id: null,
+            totalRevenue: { $sum: "$amount" },
+            totalPayments: { $sum: 1 },
+          },
+        },
+        {
+          $project: {
+            _id: 0,
+            totalRevenue: 1,
+            totalPayments: 1,
+          },
+        },
+      ];
+
+      /* ===============================
+         5️⃣ Payments Per Day
+      =============================== */
+      const paymentsPerDayPipeline = [
+        { $match: { paymentStatus: "paid" } },
+        {
+          $addFields: {
+            day: {
+              $dateToString: {
+                format: "%Y-%m-%d",
+                date: "$paidAt",
+              },
+            },
+          },
+        },
+        {
+          $group: {
+            _id: "$day",
+            totalAmount: { $sum: "$amount" },
+            totalPayments: { $sum: 1 },
+          },
+        },
+        { $sort: { _id: 1 } },
+      ];
+
+      /* ===============================
+         Execute all aggregations
+      =============================== */
+      const [
+        issueStatus,
+        issuesPerDay,
+        assignmentSummary,
+        paymentSummary,
+        paymentsPerDay,
+      ] = await Promise.all([
+        issuesCollection.aggregate(issueStatusPipeline).toArray(),
+        issuesCollection.aggregate(issuesPerDayPipeline).toArray(),
+        issuesCollection.aggregate(assignmentPipeline).toArray(),
+        paymentsCollection.aggregate(paymentSummaryPipeline).toArray(),
+        paymentsCollection.aggregate(paymentsPerDayPipeline).toArray(),
+      ]);
+
+      /* ===============================
+         Final Dashboard Response
+      =============================== */
+      res.send({
+        issues: {
+          byStatus: issueStatus,
+          perDay: issuesPerDay,
+          assignment: assignmentSummary,
+        },
+        payments: {
+          summary: paymentSummary[0] || {
+            totalRevenue: 0,
+            totalPayments: 0,
+          },
+          perDay: paymentsPerDay,
+        },
+      });
+    } catch (error) {
+      console.error("Dashboard Summary Error:", error);
+      res.status(500).send({ message: "Failed to load dashboard data" });
+    }
+  }
+);
+
+
     // -------------------------------
     // PDF GENERATION (Challenge Task #4: Client-side logic assumed, endpoint for data)
     // -------------------------------
@@ -970,6 +1216,9 @@ async function run() {
     // Get payment details for PDF invoice
     app.get("/payments/invoice/:paymentId", verifyFBToken, async (req, res) => {
       const paymentId = req.params.paymentId;
+      if (!ObjectId.isValid(paymentId)) {
+        return res.status(400).send({ message: "Invalid payment ID" });
+      }
       const payment = await paymentsCollection.findOne({
         _id: new ObjectId(paymentId),
       });
