@@ -182,34 +182,56 @@ async function run() {
     });
 
     // Update user profile/status/subscription (Citizen Profile/Admin Management)
-    app.patch("/users/:email", verifyFBToken, async (req, res) => {
-      const email = req.params.email;
-      const updatedData = req.body;
+app.patch("/users/:email", verifyFBToken, async (req, res) => {
+  const email = req.params.email;
+  const { displayName, photoURL, isBlocked, role } = req.body;
 
-      // Only Admin can block/unblock or change role
-      if (
-        req.user_role !== "admin" &&
-        (updatedData.isBlocked !== undefined || updatedData.role)
-      ) {
-        return res.status(403).send({
-          message: "Forbidden: Insufficient permissions to manage status.",
-        });
-      }
-
-      // Citizen can only update own profile
-      if (req.user_role === "citizen" && req.user_email !== email) {
-        return res
-          .status(403)
-          .send({ message: "Forbidden: Cannot update other user's profile." });
-      }
-
-      const result = await usersCollection.updateOne(
-        { email },
-        { $set: updatedData }
-      );
-
-      res.send(result);
+  // 1. FORBIDDEN CHECK: Only Admin can change sensitive fields
+  const isAdminAction = isBlocked !== undefined || role !== undefined;
+  if (isAdminAction && req.user_role !== "admin") {
+    return res.status(403).send({
+      message: "Forbidden: Only admins can manage roles or status.",
     });
+  }
+
+  // 2. OWNERSHIP CHECK: Users can only update themselves (unless Admin)
+  if (req.user_role !== "admin" && req.user_email !== email) {
+    return res.status(403).send({ 
+      message: "Forbidden: You can only update your own profile." 
+    });
+  }
+
+  // 3. DATA FILTERING: Only allow specific fields to be updated
+  let updateDoc = {};
+  
+  if (req.user_role === "admin") {
+    // Admins can update everything sent
+    if (displayName) updateDoc.displayName = displayName;
+    if (photoURL) updateDoc.photoURL = photoURL;
+    if (role) updateDoc.role = role;
+    if (isBlocked !== undefined) updateDoc.isBlocked = isBlocked;
+  } else {
+    // Citizens can ONLY update these two fields
+    if (displayName) updateDoc.displayName = displayName;
+    if (photoURL) updateDoc.photoURL = photoURL;
+  }
+
+  // If no valid fields were provided, stop here
+  if (Object.keys(updateDoc).length === 0) {
+    return res.status(400).send({ message: "No valid fields provided for update." });
+  }
+
+  try {
+    const result = await usersCollection.updateOne(
+      { email: email },
+      { $set: updateDoc }
+    );
+    res.send(result);
+  } catch (error) {
+    console.error("Profile Update Error:", error);
+    res.status(500).send({ message: "Internal Server Error" });
+  }
+});
 
     // -------------------------------
     // 🐞 ISSUES API (Public & Shared Routes)
@@ -524,78 +546,79 @@ async function run() {
     });
 
     // GET my issues (Citizen Dashboard)
-    app.get("/issues/my", verifyFBToken, verifyCitizen, async (req, res) => {
-      const query = { reporterEmail: req.user_email };
-      const cursor = issuesCollection.find(query).sort({ createdAt: -1 });
-      const result = await cursor.toArray();
-      res.send(result);
-    });
+// GET your own reported issues
+app.get("/issues/my/:email", verifyFBToken, verifyCitizen, async (req, res) => {
+    try {
+        const emailFromToken = req.user_email;
+
+        // Log to verify middleware is working
+        console.log("Fetching issues for email:", emailFromToken);
+
+        if (!emailFromToken) {
+            return res.status(400).send({ message: "Invalid user email in token" });
+        }
+
+        // IMPORTANT: Ensure your DB field name is 'email' 
+        // match what you used in app.post("/issues/report")
+        const query = { email: emailFromToken };
+     
+
+        const result = await issuesCollection
+            .find(query)
+            .sort({ createdAt: -1 })
+            .toArray();
+
+        // Log the result count
+        console.log(`Found ${result.length} issues for ${emailFromToken}`);
+        
+        res.send(result);
+    } catch (error) {
+        console.error("Database Error:", error);
+        res.status(500).send({ message: "Internal Server Error", error: error.message });
+    }
+});
 
     // Edit an issue (Citizen only)
-    app.patch(
-      "/issues/my/:id",
-      verifyFBToken,
-      verifyCitizen,
-      async (req, res) => {
-        const issueId = req.params.id;
-        if (!ObjectId.isValid(issueId)) {
-          return res.status(400).send({ message: "Invalid issue ID" });
-        }
-        const updatedData = req.body;
-        const userEmail = req.user_email;
+   app.patch("/issues/my/:id", verifyFBToken, verifyCitizen, async (req, res) => {
+    const issueId = req.params.id;
+    const userEmail = req.user_email;
 
-        const issue = await issuesCollection.findOne({
-          _id: new ObjectId(issueId),
-        });
+    const issue = await issuesCollection.findOne({ _id: new ObjectId(issueId) });
+    
+    // Debug Logs - check these in your VS Code terminal
+    console.log("User Email from Token:", userEmail);
+    console.log("Email found in DB Issue:", issue?.email || issue?.reporterEmail);
 
-        if (!issue) return res.status(404).send({ message: "Issue not found" });
-
-        // 🔒 Must be the owner
-        if (issue.reporterEmail !== userEmail) {
-          return res
-            .status(403)
-            .send({ message: "Forbidden: Not issue owner" });
-        }
-
-        // 🔒 Must be status=pending to edit
-        if (issue.status.toLowerCase() !== "pending") {
-          return res
-            .status(400)
-            .send({ message: "Can only edit issues with 'Pending' status" });
-        }
-
-        const result = await issuesCollection.updateOne(
-          { _id: new ObjectId(issueId) },
-          { $set: updatedData }
-        );
-        res.send(result);
-      }
-    );
+    if (issue.email !== userEmail) { // Ensure this matches your DB key!
+        return res.status(403).send({ message: "Forbidden: Not issue owner" });
+    }
+    // ... rest of code
+});
 
     // Delete an issue (Citizen only)
-    app.delete("/issues/my/:id", verifyFBToken, async (req, res) => {
-      const issueId = req.params.id;
-      if (!ObjectId.isValid(issueId)) {
-        return res.status(400).send({ message: "Invalid issue ID" });
-      }
-      const userEmail = req.user_email;
+app.delete("/issues/my/:id", verifyFBToken, async (req, res) => {
+  const issueId = req.params.id;
+  const userEmail = req.user_email; // From verifyFBToken
 
-      const issue = await issuesCollection.findOne({
-        _id: new ObjectId(issueId),
-      });
+  const issue = await issuesCollection.findOne({
+    _id: new ObjectId(issueId),
+  });
 
-      if (!issue) return res.status(404).send({ message: "Issue not found" });
+  if (!issue) return res.status(404).send({ message: "Issue not found" });
 
-      // 🔒 Must be the owner
-      if (issue.reporterEmail !== userEmail) {
-        return res.status(403).send({ message: "Forbidden: Not issue owner" });
-      }
-
-      const result = await issuesCollection.deleteOne({
-        _id: new ObjectId(issueId),
-      });
-      res.send(result);
+  // 🔒 CRITICAL FIX: Change reporterEmail to email
+  // Because in your ReportIssue logic, you saved it as 'email'
+  if (issue.email !== userEmail) {
+    return res.status(403).send({ 
+      message: `Forbidden: You (${userEmail}) do not own this issue (${issue.email})` 
     });
+  }
+
+  const result = await issuesCollection.deleteOne({
+    _id: new ObjectId(issueId),
+  });
+  res.send(result);
+});
 
 
     // app.patch(
