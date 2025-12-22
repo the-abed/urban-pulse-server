@@ -57,62 +57,65 @@ const verifyFBToken = async (req, res, next) => {
   if (!authHeader) {
     return res.status(401).send({ message: "Unauthorized access" });
   }
+
   try {
     const token = authHeader.split(" ")[1];
     const decodedToken = await admin.auth().verifyIdToken(token);
-    req.user_email = decodedToken.email; // Renamed to user_email for clarity
+    
+    // Always use the email from the decoded token for security
+    const email = decodedToken.email;
 
-    // Fetch user role from DB and attach to req object
     const usersCollection = client.db("urbanPulse_db").collection("users");
-    const user = await usersCollection.findOne(
-      { email: req.user_email },
-      { projection: { role: 1, isBlocked: 1, isPremium: 1 } }
-    );
+    const user = await usersCollection.findOne({ email: email });
 
     if (!user) {
-      return res.status(401).send({ error: "User not found in database" });
+      return res.status(404).send({ message: "User record not found" });
     }
 
-    req.user_role = user.role;
-    req.is_blocked = user.isBlocked || false;
-    req.is_premium = user.isPremium || false;
-
+    // ATTACH EVERYTHING TO THE REQ OBJECT
+    req.user_email = user.email;
+    req.user_role = user.role;      // This will be "citizen"
+    req.is_blocked = user.isBlocked; // This will be false
+    
     next();
   } catch (error) {
-    console.error("Token verification error:", error);
-    return res.status(401).send({ error: "You are not authorized" });
+    console.error("Auth Error:", error);
+    return res.status(401).send({ message: "Invalid Token" });
   }
 };
 
 // -------------------------------
 // 🔒 ROLE MIDDLEWARE (Challenge Task #1)
 // -------------------------------
+// Admin only
 const verifyAdmin = (req, res, next) => {
   if (req.user_role !== "admin") {
-    return res
-      .status(403)
-      .send({ message: "Forbidden: Admin access required" });
+    return res.status(403).send({ message: "Forbidden: Admin access required" });
   }
   next();
 };
 
+// Staff (Admins usually have staff permissions too)
 const verifyStaff = (req, res, next) => {
   if (req.user_role !== "staff" && req.user_role !== "admin") {
-    // Admins can also access staff routes if needed
-    return res
-      .status(403)
-      .send({ message: "Forbidden: Staff access required" });
+    return res.status(403).send({ message: "Forbidden: Staff access required" });
   }
   next();
 };
 
+// Citizen (Blocked users are rejected here)
 const verifyCitizen = (req, res, next) => {
-  if (req.user_role !== "citizen" && req.user_role !== "admin") {
-    return res
-      .status(403)
-      .send({ message: "Forbidden: Citizen access required" });
+  // Check if they are blocked first
+  if (req.is_blocked === true) {
+    return res.status(403).send({ message: "Forbidden: Your account is blocked" });
   }
-  next();
+
+  // Allow both 'citizen' and 'admin' (Admins usually need to test or act as citizens)
+  if (req.user_role === "citizen" || req.user_role === "admin") {
+    return next();
+  }
+
+  return res.status(403).send({ message: "Forbidden: Citizen access required" });
 };
 
 async function run() {
@@ -470,7 +473,8 @@ async function run() {
     // -------------------------------
 
     // Create an issue (Citizen only)
-    app.post("/issues/report", async (req, res) => {
+   // Create an issue (Citizen only)
+    app.post("/issues/report", verifyFBToken, verifyCitizen, async (req, res) => {
       if (req.is_blocked) {
         return res.status(403).send({
           message: "Your account is blocked and cannot report issues.",
