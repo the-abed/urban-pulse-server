@@ -61,7 +61,7 @@ const verifyFBToken = async (req, res, next) => {
   try {
     const token = authHeader.split(" ")[1];
     const decodedToken = await admin.auth().verifyIdToken(token);
-    
+
     // Always use the email from the decoded token for security
     const email = decodedToken.email;
 
@@ -74,9 +74,9 @@ const verifyFBToken = async (req, res, next) => {
 
     // ATTACH EVERYTHING TO THE REQ OBJECT
     req.user_email = user.email;
-    req.user_role = user.role;      // This will be "citizen"
+    req.user_role = user.role; // This will be "citizen"
     req.is_blocked = user.isBlocked; // This will be false
-    
+
     next();
   } catch (error) {
     console.error("Auth Error:", error);
@@ -90,7 +90,9 @@ const verifyFBToken = async (req, res, next) => {
 // Admin only
 const verifyAdmin = (req, res, next) => {
   if (req.user_role !== "admin") {
-    return res.status(403).send({ message: "Forbidden: Admin access required" });
+    return res
+      .status(403)
+      .send({ message: "Forbidden: Admin access required" });
   }
   next();
 };
@@ -98,7 +100,9 @@ const verifyAdmin = (req, res, next) => {
 // Staff (Admins usually have staff permissions too)
 const verifyStaff = (req, res, next) => {
   if (req.user_role !== "staff" && req.user_role !== "admin") {
-    return res.status(403).send({ message: "Forbidden: Staff access required" });
+    return res
+      .status(403)
+      .send({ message: "Forbidden: Staff access required" });
   }
   next();
 };
@@ -107,7 +111,9 @@ const verifyStaff = (req, res, next) => {
 const verifyCitizen = (req, res, next) => {
   // Check if they are blocked first
   if (req.is_blocked === true) {
-    return res.status(403).send({ message: "Forbidden: Your account is blocked" });
+    return res
+      .status(403)
+      .send({ message: "Forbidden: Your account is blocked" });
   }
 
   // Allow both 'citizen' and 'admin' (Admins usually need to test or act as citizens)
@@ -115,7 +121,9 @@ const verifyCitizen = (req, res, next) => {
     return next();
   }
 
-  return res.status(403).send({ message: "Forbidden: Citizen access required" });
+  return res
+    .status(403)
+    .send({ message: "Forbidden: Citizen access required" });
 };
 
 async function run() {
@@ -182,56 +190,58 @@ async function run() {
     });
 
     // Update user profile/status/subscription (Citizen Profile/Admin Management)
-app.patch("/users/:email", verifyFBToken, async (req, res) => {
-  const email = req.params.email;
-  const { displayName, photoURL, isBlocked, role } = req.body;
+    app.patch("/users/:email", verifyFBToken, async (req, res) => {
+      const email = req.params.email;
+      const { displayName, photoURL, isBlocked, role } = req.body;
 
-  // 1. FORBIDDEN CHECK: Only Admin can change sensitive fields
-  const isAdminAction = isBlocked !== undefined || role !== undefined;
-  if (isAdminAction && req.user_role !== "admin") {
-    return res.status(403).send({
-      message: "Forbidden: Only admins can manage roles or status.",
+      // 1. FORBIDDEN CHECK: Only Admin can change sensitive fields
+      const isAdminAction = isBlocked !== undefined || role !== undefined;
+      if (isAdminAction && req.user_role !== "admin") {
+        return res.status(403).send({
+          message: "Forbidden: Only admins can manage roles or status.",
+        });
+      }
+
+      // 2. OWNERSHIP CHECK: Users can only update themselves (unless Admin)
+      if (req.user_role !== "admin" && req.user_email !== email) {
+        return res.status(403).send({
+          message: "Forbidden: You can only update your own profile.",
+        });
+      }
+
+      // 3. DATA FILTERING: Only allow specific fields to be updated
+      let updateDoc = {};
+
+      if (req.user_role === "admin") {
+        // Admins can update everything sent
+        if (displayName) updateDoc.displayName = displayName;
+        if (photoURL) updateDoc.photoURL = photoURL;
+        if (role) updateDoc.role = role;
+        if (isBlocked !== undefined) updateDoc.isBlocked = isBlocked;
+      } else {
+        // Citizens can ONLY update these two fields
+        if (displayName) updateDoc.displayName = displayName;
+        if (photoURL) updateDoc.photoURL = photoURL;
+      }
+
+      // If no valid fields were provided, stop here
+      if (Object.keys(updateDoc).length === 0) {
+        return res
+          .status(400)
+          .send({ message: "No valid fields provided for update." });
+      }
+
+      try {
+        const result = await usersCollection.updateOne(
+          { email: email },
+          { $set: updateDoc }
+        );
+        res.send(result);
+      } catch (error) {
+        console.error("Profile Update Error:", error);
+        res.status(500).send({ message: "Internal Server Error" });
+      }
     });
-  }
-
-  // 2. OWNERSHIP CHECK: Users can only update themselves (unless Admin)
-  if (req.user_role !== "admin" && req.user_email !== email) {
-    return res.status(403).send({ 
-      message: "Forbidden: You can only update your own profile." 
-    });
-  }
-
-  // 3. DATA FILTERING: Only allow specific fields to be updated
-  let updateDoc = {};
-  
-  if (req.user_role === "admin") {
-    // Admins can update everything sent
-    if (displayName) updateDoc.displayName = displayName;
-    if (photoURL) updateDoc.photoURL = photoURL;
-    if (role) updateDoc.role = role;
-    if (isBlocked !== undefined) updateDoc.isBlocked = isBlocked;
-  } else {
-    // Citizens can ONLY update these two fields
-    if (displayName) updateDoc.displayName = displayName;
-    if (photoURL) updateDoc.photoURL = photoURL;
-  }
-
-  // If no valid fields were provided, stop here
-  if (Object.keys(updateDoc).length === 0) {
-    return res.status(400).send({ message: "No valid fields provided for update." });
-  }
-
-  try {
-    const result = await usersCollection.updateOne(
-      { email: email },
-      { $set: updateDoc }
-    );
-    res.send(result);
-  } catch (error) {
-    console.error("Profile Update Error:", error);
-    res.status(500).send({ message: "Internal Server Error" });
-  }
-});
 
     // -------------------------------
     // 🐞 ISSUES API (Public & Shared Routes)
@@ -309,7 +319,6 @@ app.patch("/users/:email", verifyFBToken, async (req, res) => {
       }
     });
 
-    
     app.patch("/issue/:id/upvote", verifyFBToken, async (req, res) => {
       const issueId = req.params.id;
       if (!ObjectId.isValid(issueId)) {
@@ -422,22 +431,24 @@ app.patch("/users/:email", verifyFBToken, async (req, res) => {
             .send({ message: "Invalid issue ID in metadata" });
         }
 
-       // ✅ Prevent duplicate payment
-const paymentExists = await paymentsCollection.findOne({ transactionId });
+        // ✅ Prevent duplicate payment
+        const paymentExists = await paymentsCollection.findOne({
+          transactionId,
+        });
 
-if (paymentExists) {
-  // Return the full saved object so the frontend has everything it needs
-  return res.status(200).send({
-    success: true,
-    message: "Payment already processed",
-    transactionId: paymentExists.transactionId,
-    trackingId: paymentExists.trackingId,
-    amount: paymentExists.amount,         // Added
-    issueName: paymentExists.issueName,   // Added
-    reporterEmail: paymentExists.reporterEmail, // Added
-    paidAt: paymentExists.paidAt          // Added
-  });
-}
+        if (paymentExists) {
+          // Return the full saved object so the frontend has everything it needs
+          return res.status(200).send({
+            success: true,
+            message: "Payment already processed",
+            transactionId: paymentExists.transactionId,
+            trackingId: paymentExists.trackingId,
+            amount: paymentExists.amount, // Added
+            issueName: paymentExists.issueName, // Added
+            reporterEmail: paymentExists.reporterEmail, // Added
+            paidAt: paymentExists.paidAt, // Added
+          });
+        }
 
         // ✅ Update issue boosted status
         const issueUpdateResult = await issuesCollection.updateOne(
@@ -498,197 +509,163 @@ if (paymentExists) {
     // -------------------------------
 
     // Create an issue (Citizen only)
-   // Create an issue (Citizen only)
-    app.post("/issues/report", verifyFBToken, verifyCitizen, async (req, res) => {
-      if (req.is_blocked) {
-        return res.status(403).send({
-          message: "Your account is blocked and cannot report issues.",
-        });
-      }
-
-      const issue = req.body;
-      const user = await usersCollection.findOne({ email: req.user_email });
-
-      // ❌ Free user issue limit check
-      // if (!req.is_premium && user.reportCount >= 3) {
-      //   return res.status(400).send({
-      //     message:
-      //       "Free user limit reached (3 issues). Please subscribe for unlimited reports.",
-      //   });
-      // }
-
-      issue.trackingId = generateTrackingId();
-      issue.createdAt = new Date();
-      issue.status = "pending";
-      issue.upvotes = 0;
-      issue.upvoters = []; // Array of emails who upvoted
-      issue.assignedStaff = null;
-
-      // 👇 default values
-      issue.priority = "normal";
-      issue.boosted = false;
-      issue.timeline = [
-        {
-          status: "Pending",
-          message: "Issue reported by citizen.",
-          updatedBy: "Citizen",
-          reporterEmail: issue.reporterEmail,
-          date: new Date(),
-        },
-      ];
-
-      const result = await issuesCollection.insertOne(issue);
-
-      // ➕ Increment report count for citizen
-      await usersCollection.updateOne(
-        { email: req.user_email },
-        { $inc: { reportCount: 1 } }
-      );
-
-      res.send(result);
-    });
-
-    // GET my issues (Citizen Dashboard)
-// GET your own reported issues
-app.get("/issues/my/:email", verifyFBToken, verifyCitizen, async (req, res) => {
-    try {
-        const emailFromToken = req.user_email;
-
-        // Log to verify middleware is working
-        console.log("Fetching issues for email:", emailFromToken);
-
-        if (!emailFromToken) {
-            return res.status(400).send({ message: "Invalid user email in token" });
+    // Create an issue (Citizen only)
+    app.post(
+      "/issues/report",
+      verifyFBToken,
+      verifyCitizen,
+      async (req, res) => {
+        if (req.is_blocked) {
+          return res.status(403).send({
+            message: "Your account is blocked and cannot report issues.",
+          });
         }
 
-        // IMPORTANT: Ensure your DB field name is 'email' 
-        // match what you used in app.post("/issues/report")
-        const query = { email: emailFromToken };
-     
+        const issue = req.body;
+        const user = await usersCollection.findOne({ email: req.user_email });
 
-        const result = await issuesCollection
+        // ❌ Free user issue limit check
+        // if (!req.is_premium && user.reportCount >= 3) {
+        //   return res.status(400).send({
+        //     message:
+        //       "Free user limit reached (3 issues). Please subscribe for unlimited reports.",
+        //   });
+        // }
+
+        issue.trackingId = generateTrackingId();
+        issue.createdAt = new Date();
+        issue.status = "pending";
+        issue.upvotes = 0;
+        issue.upvoters = []; // Array of emails who upvoted
+        issue.assignedStaff = null;
+
+        // 👇 default values
+        issue.priority = "normal";
+        issue.boosted = false;
+        issue.timeline = [
+          {
+            status: "Pending",
+            message: "Issue reported by citizen.",
+            updatedBy: "Citizen",
+            reporterEmail: issue.reporterEmail,
+            date: new Date(),
+          },
+        ];
+
+        const result = await issuesCollection.insertOne(issue);
+
+        // ➕ Increment report count for citizen
+        await usersCollection.updateOne(
+          { email: req.user_email },
+          { $inc: { reportCount: 1 } }
+        );
+
+        res.send(result);
+      }
+    );
+
+    // GET my issues (Citizen Dashboard)
+    // GET your own reported issues
+    app.get(
+      "/issues/my/:email",
+      verifyFBToken,
+      verifyCitizen,
+      async (req, res) => {
+        try {
+          const emailFromToken = req.user_email;
+
+          // Log to verify middleware is working
+          console.log("Fetching issues for email:", emailFromToken);
+
+          if (!emailFromToken) {
+            return res
+              .status(400)
+              .send({ message: "Invalid user email in token" });
+          }
+
+          // IMPORTANT: Ensure your DB field name is 'email'
+          // match what you used in app.post("/issues/report")
+          const query = { email: emailFromToken };
+
+          const result = await issuesCollection
             .find(query)
             .sort({ createdAt: -1 })
             .toArray();
 
-        // Log the result count
-        console.log(`Found ${result.length} issues for ${emailFromToken}`);
-        
-        res.send(result);
-    } catch (error) {
-        console.error("Database Error:", error);
-        res.status(500).send({ message: "Internal Server Error", error: error.message });
-    }
-});
+          // Log the result count
+          console.log(`Found ${result.length} issues for ${emailFromToken}`);
+
+          res.send(result);
+        } catch (error) {
+          console.error("Database Error:", error);
+          res
+            .status(500)
+            .send({ message: "Internal Server Error", error: error.message });
+        }
+      }
+    );
 
     // Edit an issue (Citizen only)
-app.patch("/issues/my/:id", verifyFBToken, verifyCitizen, async (req, res) => {
-    const issueId = req.params.id;
-    const { title, description, category, district, upazila } = req.body;
+    app.patch(
+      "/issues/my/:id",
+      verifyFBToken,
+      verifyCitizen,
+      async (req, res) => {
+        const issueId = req.params.id;
+        const { title, description, category, district, upazila } = req.body;
 
-    // Filter the body so we ONLY update specific allowed fields
-    const updateDoc = {};
-    if (title) updateDoc.title = title;
-    if (description) updateDoc.description = description;
-    if (category) updateDoc.category = category;
-    if (district) updateDoc.district = district;
-    if (upazila) updateDoc.upazila = upazila;
+        // Filter the body so we ONLY update specific allowed fields
+        const updateDoc = {};
+        if (title) updateDoc.title = title;
+        if (description) updateDoc.description = description;
+        if (category) updateDoc.category = category;
+        if (district) updateDoc.district = district;
+        if (upazila) updateDoc.upazila = upazila;
 
-    try {
-        const result = await issuesCollection.updateOne(
+        try {
+          const result = await issuesCollection.updateOne(
             { _id: new ObjectId(issueId) },
             { $set: updateDoc }
-        );
+          );
 
-        if (result.modifiedCount > 0) {
+          if (result.modifiedCount > 0) {
             res.send({ success: true, message: "Updated successfully" });
-        } else {
-            res.status(400).send({ message: "No changes made to the document" });
+          } else {
+            res
+              .status(400)
+              .send({ message: "No changes made to the document" });
+          }
+        } catch (error) {
+          res
+            .status(500)
+            .send({ message: "Update failed", error: error.message });
         }
-    } catch (error) {
-        res.status(500).send({ message: "Update failed", error: error.message });
-    }
-});
+      }
+    );
     // Delete an issue (Citizen only)
-app.delete("/issues/my/:id", verifyFBToken, async (req, res) => {
-  const issueId = req.params.id;
-  const userEmail = req.user_email; // From verifyFBToken
+    app.delete("/issues/my/:id", verifyFBToken, async (req, res) => {
+      const issueId = req.params.id;
+      const userEmail = req.user_email; // From verifyFBToken
 
-  const issue = await issuesCollection.findOne({
-    _id: new ObjectId(issueId),
-  });
+      const issue = await issuesCollection.findOne({
+        _id: new ObjectId(issueId),
+      });
 
-  if (!issue) return res.status(404).send({ message: "Issue not found" });
+      if (!issue) return res.status(404).send({ message: "Issue not found" });
 
-  // 🔒 CRITICAL FIX: Change reporterEmail to email
-  // Because in your ReportIssue logic, you saved it as 'email'
-  if (issue.email !== userEmail) {
-    return res.status(403).send({ 
-      message: `Forbidden: You (${userEmail}) do not own this issue (${issue.email})` 
+      // 🔒 CRITICAL FIX: Change reporterEmail to email
+      // Because in your ReportIssue logic, you saved it as 'email'
+      if (issue.email !== userEmail) {
+        return res.status(403).send({
+          message: `Forbidden: You (${userEmail}) do not own this issue (${issue.email})`,
+        });
+      }
+
+      const result = await issuesCollection.deleteOne({
+        _id: new ObjectId(issueId),
+      });
+      res.send(result);
     });
-  }
-
-  const result = await issuesCollection.deleteOne({
-    _id: new ObjectId(issueId),
-  });
-  res.send(result);
-});
-
-
-    // app.patch(
-    //   "/issues/:id/boost",
-    //   verifyFBToken,
-    //   verifyCitizen,
-    //   async (req, res) => {
-    //     const issueId = req.params.id;
-    //     const userEmail = req.user_email;
-
-    //     const issue = await issuesCollection.findOne({
-    //       _id: new ObjectId(issueId),
-    //     });
-
-    //     if (!issue) return res.status(404).send({ message: "Issue not found" });
-    //     if (issue.reporterEmail !== userEmail)
-    //       return res.status(403).send({ message: "Forbidden" });
-    //     if (issue.boosted)
-    //       return res.status(400).send({ message: "Issue already boosted" });
-
-    //     // 💡 Placeholder for actual payment verification (e.g., Stripe/SSLCommerz webhook)
-    //     // For now, assume payment success:
-    //     const paymentAmount = 100; // 100tk per issue boost
-
-    //     const boostRecord = {
-    //       status: issue.status, // Status doesn't change on boost
-    //       message: `Priority boosted by citizen (Payment: ${paymentAmount}tk)`,
-    //       updatedBy: "Citizen",
-    //       date: new Date(),
-    //     };
-
-    //     // ➕ Record Payment
-    //     await paymentsCollection.insertOne({
-    //       type: "Issue Boost",
-    //       issueId: new ObjectId(issueId),
-    //       email: userEmail,
-    //       amount: paymentAmount,
-    //       date: new Date(),
-    //     });
-
-    //     const result = await issuesCollection.updateOne(
-    //       { _id: new ObjectId(issueId) },
-    //       {
-    //         $set: {
-    //           priority: "high",
-    //           boosted: true,
-    //         },
-    //         $push: {
-    //           timeline: boostRecord,
-    //         },
-    //       }
-    //     );
-
-    //     res.send({ success: true, result });
-    //   }
-    // );
 
     // -------------------------------
     // 🛠️ STAFF DASHBOARD APIs
@@ -706,60 +683,78 @@ app.delete("/issues/my/:id", verifyFBToken, async (req, res) => {
     });
 
     // citizen stats
-    app.get("/citizen-stats", verifyFBToken, verifyCitizen, async (req, res) => {
-    try {
-        const email = req.user_email;
+    app.get(
+      "/citizen-stats",
+      verifyFBToken,
+      verifyCitizen,
+      async (req, res) => {
+        try {
+          const email = req.user_email;
 
-        const stats = await issuesCollection.aggregate([
-            { $match: { email: email } }, // Filter for this specific citizen
-            {
+          const stats = await issuesCollection
+            .aggregate([
+              { $match: { email: email } }, // Filter for this specific citizen
+              {
                 $facet: {
-                    // Part 1: Status Counts
-                    issueStats: [
-                        {
-                            $group: {
-                                _id: "$status",
-                                count: { $sum: 1 }
-                            }
-                        }
-                    ],
-                    // Part 2: Total Payments (from a different collection or embedded)
-                    paymentStats: [
-                        {
-                            $lookup: {
-                                from: "payments", // Assuming you have a payments collection
-                                localField: "email",
-                                foreignField: "email",
-                                as: "userPayments"
-                            }
-                        },
-                        { $unwind: { path: "$userPayments", preserveNullAndEmptyArrays: true } },
-                        {
-                            $group: {
-                                _id: null,
-                                totalPaid: { $sum: "$userPayments.amount" }
-                            }
-                        }
-                    ]
-                }
-            }
-        ]).toArray();
+                  // Part 1: Status Counts
+                  issueStats: [
+                    {
+                      $group: {
+                        _id: "$status",
+                        count: { $sum: 1 },
+                      },
+                    },
+                  ],
+                  // Part 2: Total Payments (from a different collection or embedded)
+                  paymentStats: [
+                    {
+                      $lookup: {
+                        from: "payments", // Assuming you have a payments collection
+                        localField: "email",
+                        foreignField: "email",
+                        as: "userPayments",
+                      },
+                    },
+                    {
+                      $unwind: {
+                        path: "$userPayments",
+                        preserveNullAndEmptyArrays: true,
+                      },
+                    },
+                    {
+                      $group: {
+                        _id: null,
+                        totalPaid: { $sum: "$userPayments.amount" },
+                      },
+                    },
+                  ],
+                },
+              },
+            ])
+            .toArray();
 
-        // Format the data for easy consumption by the frontend
-        const result = stats[0];
-        const formattedStats = {
+          // Format the data for easy consumption by the frontend
+          const result = stats[0];
+          const formattedStats = {
             total: result.issueStats.reduce((acc, curr) => acc + curr.count, 0),
-            pending: result.issueStats.find(s => s._id === 'pending')?.count || 0,
-            inProgress: result.issueStats.find(s => s._id === 'in-progress')?.count || 0,
-            resolved: result.issueStats.find(s => s._id === 'resolved')?.count || 0,
-            totalPayments: result.paymentStats[0]?.totalPaid || 0
-        };
+            pending:
+              result.issueStats.find((s) => s._id === "pending")?.count || 0,
+            inProgress:
+              result.issueStats.find((s) => s._id === "in-progress")?.count ||
+              0,
+            resolved:
+              result.issueStats.find((s) => s._id === "resolved")?.count || 0,
+            totalPayments: result.paymentStats[0]?.totalPaid || 0,
+          };
 
-        res.send(formattedStats);
-    } catch (error) {
-        res.status(500).send({ message: "Dashboard error", error: error.message });
-    }
-});
+          res.send(formattedStats);
+        } catch (error) {
+          res
+            .status(500)
+            .send({ message: "Dashboard error", error: error.message });
+        }
+      }
+    );
 
     // -------------------------------
     // 🛠️ STAFF DASHBOARD APIs
@@ -870,55 +865,62 @@ app.delete("/issues/my/:id", verifyFBToken, async (req, res) => {
         }
       }
     );
-    
+
     // Staff states
- app.get("/staff-stats", verifyFBToken, verifyStaff, async (req, res) => {
-    try {
+    app.get("/staff-stats", verifyFBToken, verifyStaff, async (req, res) => {
+      try {
         const staffEmail = req.user_email; // e.g., "staff@gmail.com"
         const todayStart = new Date();
         todayStart.setHours(0, 0, 0, 0);
 
-        const stats = await issuesCollection.aggregate([
+        const stats = await issuesCollection
+          .aggregate([
             // 1. Match issues where this staff is assigned in the nested object
-            { $match: { "assignedStaff.email": staffEmail } }, 
+            { $match: { "assignedStaff.email": staffEmail } },
             {
-                $facet: {
-                    statusCounts: [
-                        { $group: { _id: "$status", count: { $sum: 1 } } }
-                    ],
-                    // Match assignedAt inside the assignedStaff object
-                    todayTasks: [
-                        { $match: { "assignedStaff.assignedAt": { $gte: todayStart } } },
-                        { $count: "count" }
-                    ]
-                }
-            }
-        ]).toArray();
+              $facet: {
+                statusCounts: [
+                  { $group: { _id: "$status", count: { $sum: 1 } } },
+                ],
+                // Match assignedAt inside the assignedStaff object
+                todayTasks: [
+                  {
+                    $match: {
+                      "assignedStaff.assignedAt": { $gte: todayStart },
+                    },
+                  },
+                  { $count: "count" },
+                ],
+              },
+            },
+          ])
+          .toArray();
 
         const result = stats[0];
-        
+
         // Mapping counts safely
-        const getCount = (status) => result.statusCounts.find(s => s._id === status)?.count || 0;
+        const getCount = (status) =>
+          result.statusCounts.find((s) => s._id === status)?.count || 0;
 
         const formatted = {
-            // "assigned" could be "assigned" or "accept" in your workflow
-            assigned: getCount('assigned') + getCount('accept'),
-            resolved: getCount('resolved'),
-            closed: getCount('closed'),
-            inProgress: getCount('in_progress') || getCount('in-progress'),
-            todayTasks: result.todayTasks[0]?.count || 0,
-            chartData: result.statusCounts.map(s => ({ 
-                name: s._id.replace('_', ' ').toUpperCase(), 
-                value: s.count 
-            }))
+          // "assigned" could be "assigned" or "accept" in your workflow
+          assigned: getCount("assigned") + getCount("accept"),
+          resolved: getCount("resolved"),
+          closed: getCount("closed"),
+          inProgress: getCount("in_progress") || getCount("in-progress"),
+          todayTasks: result.todayTasks[0]?.count || 0,
+          chartData: result.statusCounts.map((s) => ({
+            name: s._id.replace("_", " ").toUpperCase(),
+            value: s.count,
+          })),
         };
 
         res.send(formatted);
-    } catch (error) {
+      } catch (error) {
         console.error("Staff Stats Error:", error);
         res.status(500).send({ message: "Internal Server Error" });
-    }
-});
+      }
+    });
 
     // -------------------------------
     // 👑 ADMIN DASHBOARD APIs
@@ -938,20 +940,17 @@ app.delete("/issues/my/:id", verifyFBToken, async (req, res) => {
     );
 
     // GET all staff members (for Manage Staff)
-app.get("/staffs", async (req, res) => {
-  try {
-    const staffs = await staffCollection.find().toArray();
+    app.get("/staffs", async (req, res) => {
+      try {
+        const staffs = await staffCollection.find().toArray();
 
-    console.log("Staff count in DB:", staffs.length);
-    res.send(staffs);
-  } catch (error) {
-    console.error("Error fetching staff:", error);
-    res.status(500).send({ message: "Failed to fetch staff" });
-  }
-});
-
-
-
+        console.log("Staff count in DB:", staffs.length);
+        res.send(staffs);
+      } catch (error) {
+        console.error("Error fetching staff:", error);
+        res.status(500).send({ message: "Failed to fetch staff" });
+      }
+    });
 
     // Add a new staff member
     app.post("/staff", verifyFBToken, async (req, res) => {
@@ -1007,56 +1006,64 @@ app.get("/staffs", async (req, res) => {
     });
 
     // Delete a staff member
-   // DELETE /api/staff/:email
-// DELETE /api/staff/:email
-app.delete("/api/staff/:email", verifyFBToken, verifyAdmin, async (req, res) => {
-  const staffEmail = req.params.email;
+    // DELETE /api/staff/:email
+    // DELETE /api/staff/:email
+    app.delete(
+      "/api/staff/:email",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        const staffEmail = req.params.email;
 
-  try {
-    // 1️⃣ Find staff in usersCollection to get UID
-    const staffUser = await usersCollection.findOne({
-      email: staffEmail,
-      role: "staff",
-    });
+        try {
+          // 1️⃣ Find staff in usersCollection to get UID
+          const staffUser = await usersCollection.findOne({
+            email: staffEmail,
+            role: "staff",
+          });
 
-    if (!staffUser) {
-      return res.status(404).json({ message: "Staff user not found in users collection" });
-    }
+          if (!staffUser) {
+            return res
+              .status(404)
+              .json({ message: "Staff user not found in users collection" });
+          }
 
-    const uid = staffUser.uid;
+          const uid = staffUser.uid;
 
-    // 2️⃣ Delete user from Firebase Auth
-    await admin.auth().deleteUser(uid);
+          // 2️⃣ Delete user from Firebase Auth
+          await admin.auth().deleteUser(uid);
 
-    // 3️⃣ Delete staff from usersCollection
-    const deleteUserResult = await usersCollection.deleteOne({
-      email: staffEmail,
-      role: "staff",
-    });
+          // 3️⃣ Delete staff from usersCollection
+          const deleteUserResult = await usersCollection.deleteOne({
+            email: staffEmail,
+            role: "staff",
+          });
 
-    // 4️⃣ Delete staff from staffCollection
-    const deleteStaffResult = await staffCollection.deleteOne({ email: staffEmail });
+          // 4️⃣ Delete staff from staffCollection
+          const deleteStaffResult = await staffCollection.deleteOne({
+            email: staffEmail,
+          });
 
-    // 5️⃣ Unassign staff from any issues
-    await issuesCollection.updateMany(
-      { "assignedStaff.email": staffEmail },
-      { $set: { assignedStaff: null, status: "pending" } } // Reset status to pending
+          // 5️⃣ Unassign staff from any issues
+          await issuesCollection.updateMany(
+            { "assignedStaff.email": staffEmail },
+            { $set: { assignedStaff: null, status: "pending" } } // Reset status to pending
+          );
+
+          res.status(200).json({
+            message: "Staff deleted successfully",
+            deletedFromUsers: deleteUserResult.deletedCount,
+            deletedFromStaff: deleteStaffResult.deletedCount,
+          });
+        } catch (error) {
+          console.error("Error deleting staff:", error);
+          res.status(500).json({
+            message: "Failed to delete staff",
+            error: error.message,
+          });
+        }
+      }
     );
-
-    res.status(200).json({
-      message: "Staff deleted successfully",
-      deletedFromUsers: deleteUserResult.deletedCount,
-      deletedFromStaff: deleteStaffResult.deletedCount,
-    });
-  } catch (error) {
-    console.error("Error deleting staff:", error);
-    res.status(500).json({
-      message: "Failed to delete staff",
-      error: error.message,
-    });
-  }
-});
-
 
     // Assign Staff to an Issue (Admin only)
     app.patch(
@@ -1185,175 +1192,173 @@ app.delete("/api/staff/:email", verifyFBToken, verifyAdmin, async (req, res) => 
       res.send(payments);
     });
 
-// payment invoice pdf data by id
-
+    // payment invoice pdf data by id
 
     // Single optimized admin dashboard API
     app.get(
-  "/admin/dashboard-summary",
-  verifyFBToken,
-  verifyAdmin,
-  async (req, res) => {
-    try {
-      /* ===============================
+      "/admin/dashboard-summary",
+      verifyFBToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          /* ===============================
          1️⃣ Issues by Status
       =============================== */
-      const issueStatusPipeline = [
-        {
-          $group: {
-            _id: "$status",
-            count: { $sum: 1 },
-          },
-        },
-        {
-          $project: {
-            _id: 0,
-            status: "$_id",
-            count: 1,
-          },
-        },
-      ];
+          const issueStatusPipeline = [
+            {
+              $group: {
+                _id: "$status",
+                count: { $sum: 1 },
+              },
+            },
+            {
+              $project: {
+                _id: 0,
+                status: "$_id",
+                count: 1,
+              },
+            },
+          ];
 
-      /* ===============================
+          /* ===============================
          2️⃣ Issues Per Day
       =============================== */
-      const issuesPerDayPipeline = [
-        {
-          $addFields: {
-            day: {
-              $dateToString: {
-                format: "%Y-%m-%d",
-                date: "$createdAt",
+          const issuesPerDayPipeline = [
+            {
+              $addFields: {
+                day: {
+                  $dateToString: {
+                    format: "%Y-%m-%d",
+                    date: "$createdAt",
+                  },
+                },
               },
             },
-          },
-        },
-        {
-          $group: {
-            _id: "$day",
-            totalIssues: { $sum: 1 },
-          },
-        },
-        { $sort: { _id: 1 } },
-      ];
+            {
+              $group: {
+                _id: "$day",
+                totalIssues: { $sum: 1 },
+              },
+            },
+            { $sort: { _id: 1 } },
+          ];
 
-      /* ===============================
+          /* ===============================
          3️⃣ Assigned vs Unassigned
       =============================== */
-      const assignmentPipeline = [
-        {
-          $project: {
-            assignmentStatus: {
-              $cond: [
-                { $ifNull: ["$assignedStaff", false] },
-                "assigned",
-                "unassigned",
-              ],
-            },
-          },
-        },
-        {
-          $group: {
-            _id: "$assignmentStatus",
-            count: { $sum: 1 },
-          },
-        },
-        {
-          $project: {
-            _id: 0,
-            status: "$_id",
-            count: 1,
-          },
-        },
-      ];
-
-      /* ===============================
-         4️⃣ Payment Summary
-      =============================== */
-      const paymentSummaryPipeline = [
-        { $match: { paymentStatus: "paid" } },
-        {
-          $group: {
-            _id: null,
-            totalRevenue: { $sum: "$amount" },
-            totalPayments: { $sum: 1 },
-          },
-        },
-        {
-          $project: {
-            _id: 0,
-            totalRevenue: 1,
-            totalPayments: 1,
-          },
-        },
-      ];
-
-      /* ===============================
-         5️⃣ Payments Per Day
-      =============================== */
-      const paymentsPerDayPipeline = [
-        { $match: { paymentStatus: "paid" } },
-        {
-          $addFields: {
-            day: {
-              $dateToString: {
-                format: "%Y-%m-%d",
-                date: "$paidAt",
+          const assignmentPipeline = [
+            {
+              $project: {
+                assignmentStatus: {
+                  $cond: [
+                    { $ifNull: ["$assignedStaff", false] },
+                    "assigned",
+                    "unassigned",
+                  ],
+                },
               },
             },
-          },
-        },
-        {
-          $group: {
-            _id: "$day",
-            totalAmount: { $sum: "$amount" },
-            totalPayments: { $sum: 1 },
-          },
-        },
-        { $sort: { _id: 1 } },
-      ];
+            {
+              $group: {
+                _id: "$assignmentStatus",
+                count: { $sum: 1 },
+              },
+            },
+            {
+              $project: {
+                _id: 0,
+                status: "$_id",
+                count: 1,
+              },
+            },
+          ];
 
-      /* ===============================
+          /* ===============================
+         4️⃣ Payment Summary
+      =============================== */
+          const paymentSummaryPipeline = [
+            { $match: { paymentStatus: "paid" } },
+            {
+              $group: {
+                _id: null,
+                totalRevenue: { $sum: "$amount" },
+                totalPayments: { $sum: 1 },
+              },
+            },
+            {
+              $project: {
+                _id: 0,
+                totalRevenue: 1,
+                totalPayments: 1,
+              },
+            },
+          ];
+
+          /* ===============================
+         5️⃣ Payments Per Day
+      =============================== */
+          const paymentsPerDayPipeline = [
+            { $match: { paymentStatus: "paid" } },
+            {
+              $addFields: {
+                day: {
+                  $dateToString: {
+                    format: "%Y-%m-%d",
+                    date: "$paidAt",
+                  },
+                },
+              },
+            },
+            {
+              $group: {
+                _id: "$day",
+                totalAmount: { $sum: "$amount" },
+                totalPayments: { $sum: 1 },
+              },
+            },
+            { $sort: { _id: 1 } },
+          ];
+
+          /* ===============================
          Execute all aggregations
       =============================== */
-      const [
-        issueStatus,
-        issuesPerDay,
-        assignmentSummary,
-        paymentSummary,
-        paymentsPerDay,
-      ] = await Promise.all([
-        issuesCollection.aggregate(issueStatusPipeline).toArray(),
-        issuesCollection.aggregate(issuesPerDayPipeline).toArray(),
-        issuesCollection.aggregate(assignmentPipeline).toArray(),
-        paymentsCollection.aggregate(paymentSummaryPipeline).toArray(),
-        paymentsCollection.aggregate(paymentsPerDayPipeline).toArray(),
-      ]);
+          const [
+            issueStatus,
+            issuesPerDay,
+            assignmentSummary,
+            paymentSummary,
+            paymentsPerDay,
+          ] = await Promise.all([
+            issuesCollection.aggregate(issueStatusPipeline).toArray(),
+            issuesCollection.aggregate(issuesPerDayPipeline).toArray(),
+            issuesCollection.aggregate(assignmentPipeline).toArray(),
+            paymentsCollection.aggregate(paymentSummaryPipeline).toArray(),
+            paymentsCollection.aggregate(paymentsPerDayPipeline).toArray(),
+          ]);
 
-      /* ===============================
+          /* ===============================
          Final Dashboard Response
       =============================== */
-      res.send({
-        issues: {
-          byStatus: issueStatus,
-          perDay: issuesPerDay,
-          assignment: assignmentSummary,
-        },
-        payments: {
-          summary: paymentSummary[0] || {
-            totalRevenue: 0,
-            totalPayments: 0,
-          },
-          perDay: paymentsPerDay,
-        },
-      });
-    } catch (error) {
-      console.error("Dashboard Summary Error:", error);
-      res.status(500).send({ message: "Failed to load dashboard data" });
-    }
-  }
-);
-
+          res.send({
+            issues: {
+              byStatus: issueStatus,
+              perDay: issuesPerDay,
+              assignment: assignmentSummary,
+            },
+            payments: {
+              summary: paymentSummary[0] || {
+                totalRevenue: 0,
+                totalPayments: 0,
+              },
+              perDay: paymentsPerDay,
+            },
+          });
+        } catch (error) {
+          console.error("Dashboard Summary Error:", error);
+          res.status(500).send({ message: "Failed to load dashboard data" });
+        }
+      }
+    );
 
     // -------------------------------
     // PDF GENERATION (Challenge Task #4: Client-side logic assumed, endpoint for data)
