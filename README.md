@@ -6,7 +6,7 @@ This is the robust Node.js/Express backend for **UrbanPulse**, providing secure 
 
 ### 🚀 Live API Base URL
 - **Production:** [https://urban-pulse-server.vercel.app](https://urban-pulse-server.vercel.app)
-- **Local:** `http://localhost:5000`
+- **Local:** `https://urbanpulse-cb977.web.app/`
 
 ---
 
