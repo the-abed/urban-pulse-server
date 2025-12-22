@@ -579,22 +579,33 @@ app.get("/issues/my/:email", verifyFBToken, verifyCitizen, async (req, res) => {
 });
 
     // Edit an issue (Citizen only)
-   app.patch("/issues/my/:id", verifyFBToken, verifyCitizen, async (req, res) => {
+app.patch("/issues/my/:id", verifyFBToken, verifyCitizen, async (req, res) => {
     const issueId = req.params.id;
-    const userEmail = req.user_email;
+    const { title, description, category, district, upazila } = req.body;
 
-    const issue = await issuesCollection.findOne({ _id: new ObjectId(issueId) });
-    
-    // Debug Logs - check these in your VS Code terminal
-    console.log("User Email from Token:", userEmail);
-    console.log("Email found in DB Issue:", issue?.email || issue?.reporterEmail);
+    // Filter the body so we ONLY update specific allowed fields
+    const updateDoc = {};
+    if (title) updateDoc.title = title;
+    if (description) updateDoc.description = description;
+    if (category) updateDoc.category = category;
+    if (district) updateDoc.district = district;
+    if (upazila) updateDoc.upazila = upazila;
 
-    if (issue.email !== userEmail) { // Ensure this matches your DB key!
-        return res.status(403).send({ message: "Forbidden: Not issue owner" });
+    try {
+        const result = await issuesCollection.updateOne(
+            { _id: new ObjectId(issueId) },
+            { $set: updateDoc }
+        );
+
+        if (result.modifiedCount > 0) {
+            res.send({ success: true, message: "Updated successfully" });
+        } else {
+            res.status(400).send({ message: "No changes made to the document" });
+        }
+    } catch (error) {
+        res.status(500).send({ message: "Update failed", error: error.message });
     }
-    // ... rest of code
 });
-
     // Delete an issue (Citizen only)
 app.delete("/issues/my/:id", verifyFBToken, async (req, res) => {
   const issueId = req.params.id;
@@ -690,6 +701,62 @@ app.delete("/issues/my/:id", verifyFBToken, async (req, res) => {
       const result = await cursor.toArray();
       res.send(result);
     });
+
+    // citizen stats
+    app.get("/citizen-stats", verifyFBToken, verifyCitizen, async (req, res) => {
+    try {
+        const email = req.user_email;
+
+        const stats = await issuesCollection.aggregate([
+            { $match: { email: email } }, // Filter for this specific citizen
+            {
+                $facet: {
+                    // Part 1: Status Counts
+                    issueStats: [
+                        {
+                            $group: {
+                                _id: "$status",
+                                count: { $sum: 1 }
+                            }
+                        }
+                    ],
+                    // Part 2: Total Payments (from a different collection or embedded)
+                    paymentStats: [
+                        {
+                            $lookup: {
+                                from: "payments", // Assuming you have a payments collection
+                                localField: "email",
+                                foreignField: "email",
+                                as: "userPayments"
+                            }
+                        },
+                        { $unwind: { path: "$userPayments", preserveNullAndEmptyArrays: true } },
+                        {
+                            $group: {
+                                _id: null,
+                                totalPaid: { $sum: "$userPayments.amount" }
+                            }
+                        }
+                    ]
+                }
+            }
+        ]).toArray();
+
+        // Format the data for easy consumption by the frontend
+        const result = stats[0];
+        const formattedStats = {
+            total: result.issueStats.reduce((acc, curr) => acc + curr.count, 0),
+            pending: result.issueStats.find(s => s._id === 'pending')?.count || 0,
+            inProgress: result.issueStats.find(s => s._id === 'in-progress')?.count || 0,
+            resolved: result.issueStats.find(s => s._id === 'resolved')?.count || 0,
+            totalPayments: result.paymentStats[0]?.totalPaid || 0
+        };
+
+        res.send(formattedStats);
+    } catch (error) {
+        res.status(500).send({ message: "Dashboard error", error: error.message });
+    }
+});
 
     // -------------------------------
     // 🛠️ STAFF DASHBOARD APIs
