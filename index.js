@@ -120,7 +120,7 @@ const verifyCitizen = (req, res, next) => {
 
 async function run() {
   try {
-    await client.connect();
+    // await client.connect();
     const db = client.db("urbanPulse_db");
 
     // Database Collections
@@ -422,19 +422,22 @@ app.patch("/users/:email", verifyFBToken, async (req, res) => {
             .send({ message: "Invalid issue ID in metadata" });
         }
 
-        // ✅ Prevent duplicate payment
-        const paymentExists = await paymentsCollection.findOne({
-          transactionId,
-        });
-        console.log("paymentExists:", !!paymentExists);
-        if (paymentExists) {
-          return res.status(200).send({
-            success: true,
-            message: "Payment already processed",
-            transactionId,
-            trackingId: paymentExists.trackingId,
-          });
-        }
+       // ✅ Prevent duplicate payment
+const paymentExists = await paymentsCollection.findOne({ transactionId });
+
+if (paymentExists) {
+  // Return the full saved object so the frontend has everything it needs
+  return res.status(200).send({
+    success: true,
+    message: "Payment already processed",
+    transactionId: paymentExists.transactionId,
+    trackingId: paymentExists.trackingId,
+    amount: paymentExists.amount,         // Added
+    issueName: paymentExists.issueName,   // Added
+    reporterEmail: paymentExists.reporterEmail, // Added
+    paidAt: paymentExists.paidAt          // Added
+  });
+}
 
         // ✅ Update issue boosted status
         const issueUpdateResult = await issuesCollection.updateOne(
@@ -867,6 +870,55 @@ app.delete("/issues/my/:id", verifyFBToken, async (req, res) => {
         }
       }
     );
+    
+    // Staff states
+ app.get("/staff-stats", verifyFBToken, verifyStaff, async (req, res) => {
+    try {
+        const staffEmail = req.user_email; // e.g., "staff@gmail.com"
+        const todayStart = new Date();
+        todayStart.setHours(0, 0, 0, 0);
+
+        const stats = await issuesCollection.aggregate([
+            // 1. Match issues where this staff is assigned in the nested object
+            { $match: { "assignedStaff.email": staffEmail } }, 
+            {
+                $facet: {
+                    statusCounts: [
+                        { $group: { _id: "$status", count: { $sum: 1 } } }
+                    ],
+                    // Match assignedAt inside the assignedStaff object
+                    todayTasks: [
+                        { $match: { "assignedStaff.assignedAt": { $gte: todayStart } } },
+                        { $count: "count" }
+                    ]
+                }
+            }
+        ]).toArray();
+
+        const result = stats[0];
+        
+        // Mapping counts safely
+        const getCount = (status) => result.statusCounts.find(s => s._id === status)?.count || 0;
+
+        const formatted = {
+            // "assigned" could be "assigned" or "accept" in your workflow
+            assigned: getCount('assigned') + getCount('accept'),
+            resolved: getCount('resolved'),
+            closed: getCount('closed'),
+            inProgress: getCount('in_progress') || getCount('in-progress'),
+            todayTasks: result.todayTasks[0]?.count || 0,
+            chartData: result.statusCounts.map(s => ({ 
+                name: s._id.replace('_', ' ').toUpperCase(), 
+                value: s.count 
+            }))
+        };
+
+        res.send(formatted);
+    } catch (error) {
+        console.error("Staff Stats Error:", error);
+        res.status(500).send({ message: "Internal Server Error" });
+    }
+});
 
     // -------------------------------
     // 👑 ADMIN DASHBOARD APIs
@@ -1330,7 +1382,7 @@ app.delete("/api/staff/:email", verifyFBToken, verifyAdmin, async (req, res) => 
     });
 
     // Send a ping to confirm a successful connection
-    await client.db("admin").command({ ping: 1 });
+    // await client.db("admin").command({ ping: 1 });
     console.log(
       "Pinged your deployment. You successfully connected to MongoDB!"
     );
